@@ -6,9 +6,10 @@ Node 24 + TypeScript, Fastify, SQLite (`node:sqlite`), zod, Vitest + fast-check.
 
 ```bash
 npm install
-npm test                 # 23 tests, including a property-based test (300 random scenarios per run)
+npm test                 # 26 tests, including a property-based test (300 random scenarios per run)
 npm start                # service on :3000 (SQLite file: data.db)
 npm run simulate         # in another terminal: the PMS simulator, sends a dirty feed and verifies the result
+npm run rebuild          # rebuild the reservations table from the event log (DB_PATH, default data.db)
 ```
 
 ---
@@ -76,6 +77,7 @@ The brief lets us define the event shape. These are my assumptions; each one is 
 - **`test/sync.test.ts`**: one test per scenario: duplicates, late older version, update before create, cancellation wins over a late confirmation, transaction rollback, cancel-before-dispatch, re-confirm after skip, retry/backoff, dead letter.
 - **`test/property.test.ts`**: fast-check generates 1–5 reservations with random valid histories. Each event is delivered 1–3 times, the stream is fully shuffled, and the dispatcher runs at random points. It asserts three things: the final state equals the last true version, no guest gets more than one email, and every reservation that ends confirmed got exactly one.
 - **`test/server.test.ts`**: HTTP contract: 200 for applied, duplicate and stale; 401 for a bad signature (nothing stored); 400 for an invalid event or JSON; the read endpoints.
+- **`test/rebuild.test.ts`**: rebuilding reproduces the live view exactly, repairs a corrupted row and leaves the outbox untouched. The property test also asserts that a rebuild changes nothing after each of its random scenarios.
 - **`npm run simulate`**: end-to-end over real HTTP, with 8 concurrent senders and retries on non-2xx. It compares the service's view with the true histories and counts emails. It is seeded, so a run is reproducible (`--seed 42`).
 
 **The property test found a real bug.** My first version used `INSERT OR IGNORE` for the outbox. The failing case: confirmed → email enqueued → the reservation goes back to pending before dispatch → the dispatcher marks it `skipped` → re-confirmed → the insert is ignored → the guest never gets an email. The fix re-arms only `skipped` rows (`ON CONFLICT … DO UPDATE … WHERE status = 'skipped'`), and there is now an explicit regression test. Reverting that one statement makes both tests fail.
@@ -123,7 +125,7 @@ Configuration: `PORT` (3000), `DB_PATH` (`data.db`), `WEBHOOK_SECRET` (`dev-secr
 - **SQLite instead of in-memory.** It costs about the same to write, but gives real transactions and UNIQUE constraints. Correctness then rests on the database, not on careful code, and state survives restarts. `node:sqlite` is built into Node 24, so there are no native dependencies (it is still flagged experimental).
 - **Process inside the webhook request.** Processing is a millisecond-scale transaction, so we answer after commit. At high volume I'd persist the raw event, ack immediately, and process asynchronously.
 - **No message queue.** SQS, SNS or Kafka would help with throughput and isolation, but not with correctness: SQS standard is itself at-least-once and unordered, so the consumer would need the exact same inbox, version and outbox logic. The outbox table acts as the queue here.
-- **The reservations table is a projection.** `processed_events` is append-only and keeps every payload. `reservations` is materialized for cheap reads and could be rebuilt by replaying the log.
+- **The reservations table is a projection.** `processed_events` is append-only and keeps every payload. `reservations` is materialized for cheap reads, and `npm run rebuild` regenerates it by replaying the log through the same `applySnapshot` used live. The result is byte-identical for a healthy view and repairs a corrupted one. It never touches the outbox, so no email is re-sent. This is useful after a bug, or to backfill a new column without asking the PMS for anything.
 - **The email reads current state at send time**, not enqueue-time data. A change before dispatch is reflected; a change after dispatch is not notified (see below).
 
 ## Known limitations / what I'd do for production
@@ -143,12 +145,14 @@ src/
   domain/events.ts        event contract (zod)
   db.ts                   schema + transaction helper
   sync/processEvent.ts    dedupe → version check → upsert → outbox
+  sync/rebuild.ts         rebuild the view from the event log
   email/sender.ts         EmailSender interface + simulated provider
   email/dispatcher.ts     outbox worker: re-check status, send, retry/backoff, dead letter
   webhook/signature.ts    HMAC sign/verify
   server.ts               Fastify: webhook + read endpoints
   main.ts                 wiring, dispatcher loop, graceful shutdown
 scripts/simulate.ts       PMS simulator + end-to-end verification
+scripts/rebuild.ts        CLI for the rebuild
 test/                     example, property-based and HTTP tests
 ```
 

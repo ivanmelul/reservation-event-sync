@@ -11,6 +11,30 @@ export interface ProcessResult {
 export const confirmationKey = (reservationId: string) => `confirmation:${reservationId}`;
 
 /**
+ * Writes the event's snapshot as the current state of the reservation. Shared by live processing
+ * and by the rebuild, so both derive the view with the exact same rule. Returns the stored status.
+ */
+export function applySnapshot(db: Db, event: ReservationEvent, updatedAt: string): ReservationEvent['data']['status'] {
+  const d = event.data;
+  // `cancelled` events are authoritative about status even if the snapshot disagrees.
+  const status = event.type === 'reservation.cancelled' ? 'cancelled' : d.status;
+  db.prepare(
+    `INSERT INTO reservations (id, version, status, guest_name, guest_email, check_in, check_out,
+                               room_type, total_amount, currency, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (id) DO UPDATE SET
+       version = excluded.version, status = excluded.status, guest_name = excluded.guest_name,
+       guest_email = excluded.guest_email, check_in = excluded.check_in, check_out = excluded.check_out,
+       room_type = excluded.room_type, total_amount = excluded.total_amount,
+       currency = excluded.currency, updated_at = excluded.updated_at`,
+  ).run(
+    event.reservationId, event.version, status, d.guest.name, d.guest.email, d.checkIn, d.checkOut,
+    d.roomType, d.totalAmount, d.currency, updatedAt,
+  );
+  return status;
+}
+
+/**
  * Applies one event to the local view. Safe to call any number of times, in any order.
  *
  * All of this runs in one transaction, so the inbox row, the reservation row and the
@@ -39,22 +63,7 @@ export function processEvent(db: Db, event: ReservationEvent, now = new Date()):
 
     if (!isNewer) return { outcome, emailEnqueued: false };
 
-    const d = event.data;
-    // `cancelled` events are authoritative about status even if the snapshot disagrees.
-    const status = event.type === 'reservation.cancelled' ? 'cancelled' : d.status;
-    db.prepare(
-      `INSERT INTO reservations (id, version, status, guest_name, guest_email, check_in, check_out,
-                                 room_type, total_amount, currency, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (id) DO UPDATE SET
-         version = excluded.version, status = excluded.status, guest_name = excluded.guest_name,
-         guest_email = excluded.guest_email, check_in = excluded.check_in, check_out = excluded.check_out,
-         room_type = excluded.room_type, total_amount = excluded.total_amount,
-         currency = excluded.currency, updated_at = excluded.updated_at`,
-    ).run(
-      event.reservationId, event.version, status, d.guest.name, d.guest.email, d.checkIn, d.checkOut,
-      d.roomType, d.totalAmount, d.currency, nowIso,
-    );
+    const status = applySnapshot(db, event, nowIso);
 
     // 3. Reservation is confirmed -> make sure a confirmation email is on its way.
     //    The unique key means at most one row per reservation. If that row was skipped

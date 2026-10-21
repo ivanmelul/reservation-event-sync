@@ -12,7 +12,8 @@ Done on Oct 21. Times below are wall-clock (local time, UTC-3), reconstructed fr
 | 15:20 – 15:36 | Webhook (HMAC signature, read endpoints, graceful shutdown) + HTTP tests | ~15m |
 | 15:36 – 15:41 | PMS simulator + end-to-end runs (normal, and with a 40% failing email provider) | ~5m |
 | 15:41 – 15:45 | README, time log, commits | ~5m |
-| | **Total** | **~3h40m** |
+| 16:31 – 16:42 | Extra: rebuild the reservations view from the event log (`npm run rebuild`), with tests and a property-test assertion | ~10m |
+| | **Total** | **~3h50m** |
 
 Code generation was fast because I worked with an AI assistant. Most of the time went into the design and into understanding it deeply, which is the part I have to stand behind.
 

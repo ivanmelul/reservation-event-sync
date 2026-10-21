@@ -5,6 +5,7 @@ import type { ReservationEvent, ReservationStatus } from '../src/domain/events.t
 import { OutboxDispatcher } from '../src/email/dispatcher.ts';
 import { FakeEmailSender } from '../src/email/sender.ts';
 import { processEvent } from '../src/sync/processEvent.ts';
+import { rebuildReservations } from '../src/sync/rebuild.ts';
 import { event } from './helpers.ts';
 
 /** A valid PMS history for one reservation: created, then N updates, maybe a cancel at the end. */
@@ -76,6 +77,9 @@ describe('property: any duplication + reordering converges', () => {
           // If it ends confirmed, the guest must have been told exactly once.
           if (last.data.status === 'confirmed') expect(emails).toBe(1);
         }
+
+        // The view is a pure projection of the event log: replaying it changes nothing.
+        expect(rebuildReservations(db).changed).toEqual([]);
       }),
       { numRuns: 300 },
     );
